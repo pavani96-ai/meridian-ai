@@ -1,0 +1,5 @@
+{"query": "What was the total revenue in FY2024?", "retriever_type": "similarity", "timestamp": "2026-10-26T11:40:01.054588Z", "level": "info", "severity": "INFO", "event": "RAG query received"}
+{"timestamp": "2026-10-26T11:40:01.527036Z", "level": "info", "severity": "INFO", "event": "RAG chain built, generating answer"}
+{"path": "/mnt/f/langchain_project_1/meridian-ai/.meridian/chroma", "timestamp": "2026-10-26T11:40:05.262706Z", "level": "info", "severity": "INFO", "event": "using local Chroma vector store"}
+HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents "HTTP/1.1 200 OK"
+AFC is enabled with max remote calls: 10.

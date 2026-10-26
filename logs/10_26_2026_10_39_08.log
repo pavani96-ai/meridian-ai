@@ -1,0 +1,4 @@
+{"retriever_type": "unknown", "timestamp": "2026-10-26T10:39:13.920309Z", "level": "warning", "severity": "WARNING", "event": "Unknown retriever_type, using similarity"}
+{"query": "Payment terms?", "retriever_type": "similarity", "timestamp": "2026-10-26T10:39:13.921956Z", "level": "info", "severity": "INFO", "event": "RAG query received"}
+{"answer": "Payment is due in 30 days.", "timestamp": "2026-10-26T10:39:13.926626Z", "level": "info", "severity": "INFO", "event": "RAG answer generated"}
+{"queries": ["Payment terms?", "Terms?", "When due?", "Payment deadline?"], "timestamp": "2026-10-26T10:39:13.928990Z", "level": "info", "severity": "INFO", "event": "MultiQuery rewrites"}
