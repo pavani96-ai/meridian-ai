@@ -13,3 +13,10 @@ wheels/
 .env
 .env.*
 !.env.example
+
+# Local application data and logs
+.meridian/
+logs/
+backend/logs/
+*.log
+.pytest_cache/

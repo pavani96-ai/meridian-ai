@@ -15,7 +15,8 @@ langchain==1.2.11               # create_agent + agent middleware
 langchain-core==1.2.18          # @tool, prompts, LCEL runnables
 langchain-community==0.4.1      # PyPDFLoader
 langchain-text-splitters==1.1.1
-langchain-google-genai==4.2.1   # Gemini chat model + embeddings (API key locally, Vertex AI in cloud)
+langchain-google-genai==4.2.1   # Google embeddings
+langchain-openai==1.1.11        # OpenAI chat model
 langgraph==1.1.6                # engine behind create_agent (installed for you; we write no graph code)
 
 # --- Local mode (APP_MODE=local) ---

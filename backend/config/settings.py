@@ -2,16 +2,16 @@
 
 THE LOCAL <-> CLOUD TOGGLE
 --------------------------
-    APP_MODE=local   (default)  Runs on your laptop with ONLY a Gemini API key.
+    APP_MODE=local   (default)  Runs locally with OpenAI chat and embeddings.
                                 Vectors  -> Chroma, saved in ./.meridian/chroma
                                 Files    -> ./.meridian/uploads
-                                Embeddings -> Gemini API (API key)
+                                Embeddings -> OpenAI API (API key)
                                 No Google Cloud project, bucket or service account needed.
 
     APP_MODE=cloud              Runs against Google Cloud (what Cloud Run uses).
                                 Vectors  -> Vertex AI Vector Search
                                 Files    -> Cloud Storage bucket
-                                Embeddings -> Vertex AI (Google Cloud credentials)
+                                Embeddings -> OpenAI API (API key)
 
 Every module that touches storage asks `settings.is_cloud` instead of guessing,
 so switching mode is one line in .env.
@@ -36,22 +36,28 @@ class Settings(BaseSettings):
     # --- The toggle ---
     app_mode: Literal["local", "cloud"] = Field("local", validation_alias="APP_MODE")
 
-    # --- Gemini (used in BOTH modes for the chat model) ---
-    GOOGLE_API_KEY: str = Field("", validation_alias="GOOGLE_API_KEY")
-    llm_model_name: str = Field("gemini-3.8-flash", validation_alias="VERTEX_LLM_MODEL_NAME")
-    # 0 = most repeatable answers. If the model loops or repeats itself, try 1.0 (Gemini 3 default)
+    # --- Chat model (OpenAI in both modes) ---
+    OPENAI_API_KEY: str = Field("", validation_alias="OPENAI_API_KEY", repr=False)
+    llm_model_name: str = Field("gpt-4.1-mini", validation_alias="OPENAI_MODEL_NAME")
+    # Retained for optional Google integrations.
+    GOOGLE_API_KEY: str = Field("", validation_alias="GOOGLE_API_KEY", repr=False)
+    # Chat generation temperature.
     llm_temperature: float = Field(0.0, validation_alias="LLM_TEMPERATURE")
+    llm_request_timeout: float = Field(30.0, gt=0, validation_alias="LLM_REQUEST_TIMEOUT")
+
+    # --- Web search ---
+    TAVILY_API_KEY: str = Field("", validation_alias="TAVILY_API_KEY", repr=False)
 
     # --- Embeddings ---
-    # Cloud: Vertex AI model. Must output 768 dims to match the Vector Search index.
-    embedding_model_name: str = Field("text-embedding-005", validation_alias="VERTEX_EMBEDDING_MODEL_NAME")
-    # Local: Gemini API model (API key). Chroma has no fixed size, 768 keeps both modes alike.
-    local_embedding_model_name: str = Field("gemini-embedding-001", validation_alias="LOCAL_EMBEDDING_MODEL_NAME")
+    # OpenAI embeddings; dimensions must match the cloud Vector Search index.
+    embedding_model_name: str = Field("text-embedding-3-small", validation_alias="OPENAI_EMBEDDING_MODEL_NAME")
+    # Compatibility name for local configuration; both modes use the same model.
+    local_embedding_model_name: str = Field("text-embedding-3-small", validation_alias="OPENAI_EMBEDDING_MODEL_NAME")
     embedding_dimensions: int = 768
 
     # --- Local mode storage ---
     local_data_dir: str = Field(str(PROJECT_ROOT / ".meridian"), validation_alias="LOCAL_DATA_DIR")
-    chroma_collection: str = Field("meridian_docs", validation_alias="CHROMA_COLLECTION")
+    chroma_collection: str = Field("meridian_docs_openai", validation_alias="CHROMA_COLLECTION")
 
     # --- Cloud mode (GCP) ---
     GCP_PROJECT: str = Field("", validation_alias="GCP_PROJECT_ID")
