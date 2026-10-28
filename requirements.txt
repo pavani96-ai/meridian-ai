@@ -17,6 +17,7 @@ langchain-community==0.4.1      # PyPDFLoader
 langchain-text-splitters==1.1.1
 langchain-google-genai==4.2.1   # Google embeddings
 langchain-openai==1.1.11        # OpenAI chat model
+langchain-tavily==0.2.18        # Tavily search; version from uv.lock
 langgraph==1.1.6                # engine behind create_agent (installed for you; we write no graph code)
 
 # --- Local mode (APP_MODE=local) ---

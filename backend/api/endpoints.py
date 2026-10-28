@@ -3,6 +3,7 @@
     /api/health        - is the server up?
     /api/status        - configuration summary shown on the System Status tab
     /api/agent/audit   - run the multi-agent procurement audit        (agent/agents.py)
+    /api/agent/audit/stream - stream audit progress and CFO memo as NDJSON
     /api/rag/ask       - ask a question about the ingested documents  (rag/retrieval.py)
     /api/rag/upload    - upload PDFs and index them                   (rag/data_ingestion.py)
     /api/rag/ingest    - index every PDF already in the document store
@@ -12,6 +13,7 @@ Errors: our own exceptions (exceptions/) are turned into clear HTTP answers in a
 so the routes only catch what they can explain better themselves.
 """
 
+import json
 import os
 import platform
 import shutil
@@ -20,12 +22,14 @@ from datetime import datetime, timezone
 from functools import lru_cache
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from api.schemas import AuditRequest, AuditResponse, QueryRequest, QueryResponse
 from agent.agents import ProcurementSupervisor
 from config.settings import settings
-from exceptions import MeridianError
+from exceptions import MeridianError, PromptInjectionError
+from prompt_security import PROMPT_INJECTION_REFUSAL
 from logger import GLOBAL_LOGGER as log
 from rag import document_store
 from rag.data_ingestion import ingest_pdf, ingest_stored_pdfs
@@ -115,6 +119,27 @@ def run_audit(payload: AuditRequest):
     except Exception as e:
         log.exception("Audit failed")
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@agent_router.post("/audit/stream")
+def stream_audit(payload: AuditRequest):
+    """Stream newline-delimited JSON; errors after headers are terminal events."""
+    supervisor = get_supervisor()
+
+    def events():
+        try:
+            for event in supervisor.stream_audit(payload.request_text):
+                yield json.dumps(event) + "\n"
+        except PromptInjectionError:
+            yield json.dumps({"type": "error", "code": "prompt_injection_detected",
+                              "message": PROMPT_INJECTION_REFUSAL}) + "\n"
+        except Exception:
+            log.exception("Streaming audit failed")
+            yield json.dumps({"type": "error", "code": "audit_failed",
+                              "message": "The audit could not complete. Please try again."}) + "\n"
+
+    return StreamingResponse(events(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ---------------------------------------------------------------------------

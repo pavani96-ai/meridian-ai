@@ -23,7 +23,8 @@ from fastapi.staticfiles import StaticFiles
 
 from api.endpoints import agent_router, health_router, rag_router, status_router
 from config.settings import settings
-from exceptions import ConfigurationError, IngestionError
+from exceptions import ConfigurationError, IngestionError, PromptInjectionError
+from prompt_security import PROMPT_INJECTION_REFUSAL
 from logger import _LOGGER_INSTANCE
 from logger import GLOBAL_LOGGER as log
 
@@ -59,6 +60,18 @@ async def configuration_error(_: Request, exc: ConfigurationError):
     """Return HTTP 503 when required application configuration is missing."""
     log.error("Configuration error", error=str(exc))
     return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+@app.exception_handler(PromptInjectionError)
+async def prompt_injection_error(_: Request, exc: PromptInjectionError):
+    """Present a safe refusal while keeping blocked audits out of the success flow."""
+    return JSONResponse(
+        status_code=400,
+        content={
+            "detail": PROMPT_INJECTION_REFUSAL,
+            "code": "prompt_injection_detected",
+        },
+    )
 
 
 @app.exception_handler(IngestionError)

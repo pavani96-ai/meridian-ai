@@ -10,7 +10,6 @@ package, so the two advanced strategies are written out below in a few lines eac
 which also makes them easier to read and explain.
 """
 import json
-import re
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -19,6 +18,7 @@ from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrou
 from pydantic import BaseModel, Field
 
 from logger import GLOBAL_LOGGER as log
+from prompt_security import contains_prompt_injection as _direct_override
 from rag.llm import get_llm
 from rag.vector_store import get_vector_store
 
@@ -53,17 +53,6 @@ INJECTION_REFUSAL = (
     "I cannot follow instructions to override my rules or impersonate system messages. "
     "Please ask a factual question about the indexed documents."
 )
-
-# A narrow deterministic guard for direct override attempts, not a complete detector.
-_OVERRIDE_PATTERNS = [
-    re.compile(r"\[\s*(?:system|developer)\s*\]|<\|(?:im_start|start_header_id)\|>\s*(?:system|developer)", re.I),
-    re.compile(r"\b(?:ignore|disregard|forget)\s+(?:(?:all|any|the|your)\s+)*(?:previous|prior|above|system|developer)\s+(?:instructions?|prompts?|rules?|messages?)", re.I),
-]
-
-
-def _direct_override(text: str) -> bool:
-    return any(pattern.search(text) for pattern in _OVERRIDE_PATTERNS)
-
 
 def _answer_data(values: dict) -> dict:
     return {"data": json.dumps({"question": values["input"], "evidence": values["context"]})}

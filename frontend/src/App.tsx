@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import * as Tabs from '@radix-ui/react-tabs'
 import { Activity, ArrowDownToLine, ArrowRight, BookOpen, Check, ChevronRight, CircleHelp, FileCheck2, FileText, FolderOpen, Globe2, Landmark, Layers3, LoaderCircle, Plus, RefreshCw, Send, ShieldCheck, Sparkles, UploadCloud, X, AlertCircle, Server, Clock3 } from 'lucide-react'
 import { Button } from './components/ui/button'
-import { api, jsonPost, report, type Audit, type SystemStatus, type UploadResult } from './api'
+import { api, jsonPost, report, streamAudit, type Audit, type SystemStatus, type UploadResult } from './api'
 
 type Page = 'audit' | 'documents' | 'status'
 const sample = `Purchase Request — Aldermoor Industries Global Procurement:
@@ -24,13 +24,38 @@ function AuditWorkspace() {
   const [error, setError] = useState('')
   const [result, setResult] = useState<Audit | null>(null)
   const [elapsed, setElapsed] = useState(0)
+  const [progress, setProgress] = useState('')
+  const [memo, setMemo] = useState('')
+  const [completed, setCompleted] = useState<string[]>([])
+  const activeRequest = useRef<AbortController | null>(null)
+  useEffect(() => () => activeRequest.current?.abort(), [])
   useEffect(() => { if (!busy) return; const timer = window.setInterval(() => setElapsed(value => value + 1), 1000); return () => clearInterval(timer) }, [busy])
-  async function submit(event: FormEvent) { event.preventDefault(); if (!request.trim() || busy) return; setBusy(true); setElapsed(0); setError(''); setResult(null); try { setResult(await api<Audit>('/agent/audit', jsonPost({ request_text: request }))) } catch (err) { setError(errorText(err)) } finally { setBusy(false) } }
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!request.trim() || busy) return
+    const controller = new AbortController()
+    activeRequest.current = controller
+    setBusy(true); setElapsed(0); setError(''); setResult(null)
+    setMemo(''); setCompleted([]); setProgress('Starting audit…')
+    try {
+      await streamAudit(request, event => {
+        if (event.type === 'progress') setProgress(event.message)
+        if (event.type === 'specialist') setCompleted(value => [...value, event.key])
+        if (event.type === 'memo_delta') setMemo(value => value + event.text)
+        if (event.type === 'complete') setResult(event.audit)
+      }, controller.signal)
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        setError(errorText(err)); setMemo(''); setCompleted([]); setResult(null)
+      }
+    } finally { setBusy(false); activeRequest.current = null }
+  }
   const specialists = [{ icon: ShieldCheck, title: 'Risk & Compliance', detail: 'Sanctions screening & vendor health', number: '01' }, { icon: Globe2, title: 'Tax & Treasury', detail: 'Cross-border taxes & FX exposure', number: '02' }, { icon: Landmark, title: 'Financial Control', detail: 'Expense classification & approvals', number: '03' }]
   return <><Heading eyebrow="YOUR PROCUREMENT WORKSPACE" title="Clarity before commitment.">One request. Three specialist reviews. A clear path to your next decision.</Heading>
     <div className="specialist-grid">{specialists.map(({ icon: Icon, title, detail, number }) => <div className="specialist" key={number}><div className="specialist-top"><span className="icon-tile"><Icon size={21}/></span><span className="step-number">{number}</span></div><h3>{title}</h3><p>{detail}</p></div>)}</div>
-    <div className="workspace-grid"><section className="panel"><div className="panel-heading"><div><h2>New procurement audit</h2><p>Give your specialists the full picture.</p></div><span className="small-tag">MULTI-AGENT REVIEW</span></div><form onSubmit={submit}><div className="field-heading"><label htmlFor="procurement">Purchase request</label><button type="button" className="text-link" disabled={busy} onClick={() => setRequest(sample)}>Use an example <ArrowRight size={13}/></button></div><textarea id="procurement" value={request} onChange={e => setRequest(e.target.value)} disabled={busy} placeholder={'Describe your purchase request…\n\nInclude the vendor, item description, amount and currency, origin, destination, and invoice FX rate.'} rows={10} required/><div className="input-foot"><span><ShieldCheck size={14}/> Sent to configured AI and search services</span><span>{request.length.toLocaleString()} characters</span></div><div className="form-footer"><p>Include precise details for a more useful review.</p><Button disabled={busy || !request.trim()} type="submit">{busy ? <Spinner/> : <Sparkles size={16}/>} {busy ? `Reviewing · ${elapsed}s` : 'Run procurement audit'}{!busy && <ArrowRight size={16}/>}</Button></div></form>{busy && <Notice>The review is running. Results will appear when all agents finish; live phase progress is not available.</Notice>}{error && <Notice error>{error} Your audit did not complete. You can retry when the service is available.</Notice>}</section>
+    <div className="workspace-grid"><section className="panel"><div className="panel-heading"><div><h2>New procurement audit</h2><p>Give your specialists the full picture.</p></div><span className="small-tag">MULTI-AGENT REVIEW</span></div><form onSubmit={submit}><div className="field-heading"><label htmlFor="procurement">Purchase request</label><button type="button" className="text-link" disabled={busy} onClick={() => setRequest(sample)}>Use an example <ArrowRight size={13}/></button></div><textarea id="procurement" value={request} onChange={e => setRequest(e.target.value)} disabled={busy} placeholder={'Describe your purchase request…\n\nInclude the vendor, item description, amount and currency, origin, destination, and invoice FX rate.'} rows={10} required/><div className="input-foot"><span><ShieldCheck size={14}/> Sent to configured AI and search services</span><span>{request.length.toLocaleString()} characters</span></div><div className="form-footer"><p>Include precise details for a more useful review.</p><Button disabled={busy || !request.trim()} type="submit">{busy ? <Spinner/> : <Sparkles size={16}/>} {busy ? `Reviewing · ${elapsed}s` : 'Run procurement audit'}{!busy && <ArrowRight size={16}/>}</Button></div></form>{busy && <Notice>{progress} {completed.length}/3 specialist reviews completed.</Notice>}{error && <Notice error>{error}</Notice>}</section>
     <aside className="guidance"><div className="guidance-icon"><FileCheck2 size={25}/></div><h2>Better inputs.<br/>Better decisions.</h2><p>A complete request helps each specialist assess the right risks.</p><ul>{['Vendor name and country','Item description and quantity','Total amount and currency','Origin and destination','Invoice exchange rate'].map(item => <li key={item}><Check size={15}/>{item}</li>)}</ul><div className="guidance-note"><CircleHelp size={17}/><p>AI assessments support your review. Missing evidence, tax details, or policy approvals may lead to a hold.</p></div></aside></div>
+    {busy && memo && <section className="panel" aria-label="CFO memorandum in progress"><div className="eyebrow">DRAFT · GENERATING</div><h2>CFO memorandum</h2><pre className="memo">{memo}</pre></section>}
     {result ? <section className="results panel"><div className="panel-heading"><div><div className="eyebrow">REVIEW COMPLETE</div><h2>Your audit findings</h2></div><Button variant="outline" size="sm" onClick={() => download(result.cfo_memo)}><ArrowDownToLine size={15}/>Download memo</Button></div><div className="verdict-grid">{(['risk_result','tax_result','control_result'] as const).map((key, i) => { const parsed = report(result[key]); const verdict = parsed?.overall_risk_verdict ?? parsed?.treasury_verdict ?? parsed?.control_verdict; return <div key={key}><span>{specialists[i].title}</span><strong>{String(verdict ?? 'Review returned')}</strong></div> })}</div><Tabs.Root defaultValue="memo"><Tabs.List className="tabs" aria-label="Audit reports"><Tabs.Trigger value="memo">CFO memorandum</Tabs.Trigger><Tabs.Trigger value="risk">Risk</Tabs.Trigger><Tabs.Trigger value="tax">Tax & Treasury</Tabs.Trigger><Tabs.Trigger value="control">Control</Tabs.Trigger></Tabs.List><Tabs.Content value="memo"><pre className="memo">{result.cfo_memo}</pre></Tabs.Content>{(['risk','tax','control'] as const).map((name, i) => { const raw = result[(['risk_result','tax_result','control_result'] as const)[i]]; const parsed = report(raw); return <Tabs.Content key={name} value={name}>{parsed ? <dl className="report-fields">{Object.entries(parsed).map(([key, value]) => <div key={key}><dt>{key.replaceAll('_',' ')}</dt><dd>{value === null ? 'Not available' : typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}</dd></div>)}</dl> : <pre className="memo">{raw}</pre>}</Tabs.Content> })}</Tabs.Root></section> : <div className="process-strip"><span><Layers3 size={18}/> From request to recommendation</span><p>Specialist reviews <ChevronRight size={14}/> Consolidated findings <ChevronRight size={14}/> CFO audit memorandum</p></div>}
   </>
 }

@@ -7,9 +7,9 @@ test.beforeEach(async ({ page }) => {
 
 test('audit request, structured reports, and CFO memo', async ({ page }) => {
   let requestText = ''
-  await page.route('**/api/agent/audit', async route => {
+  await page.route('**/api/agent/audit/stream', async route => {
     requestText = route.request().postDataJSON().request_text
-    await route.fulfill({ json: { risk_result: JSON.stringify({ overall_risk_verdict: 'CONDITIONAL APPROVAL', credit_score: 60 }), tax_result: JSON.stringify({ treasury_verdict: 'MANUAL APPROVAL REQUIRED' }), control_result: JSON.stringify({ control_verdict: 'FLAGGED FOR CONTROLLING REVIEW' }), cfo_memo: 'ALDERMOOR INDUSTRIES — CFO AUDIT MEMORANDUM\nFINAL DECISION: CONDITIONAL HOLD' } })
+    await route.fulfill({ contentType: 'application/x-ndjson', body: JSON.stringify({ type: 'complete', audit: { risk_result: JSON.stringify({ overall_risk_verdict: 'CONDITIONAL APPROVAL', credit_score: 60 }), tax_result: JSON.stringify({ treasury_verdict: 'MANUAL APPROVAL REQUIRED' }), control_result: JSON.stringify({ control_verdict: 'FLAGGED FOR CONTROLLING REVIEW' }), cfo_memo: 'ALDERMOOR INDUSTRIES — CFO AUDIT MEMORANDUM\nFINAL DECISION: CONDITIONAL HOLD' } }) + '\n' })
   })
   await page.goto('/')
   await expect(page.getByRole('button', { name: 'Run procurement audit' })).toBeDisabled()
@@ -26,7 +26,7 @@ test('audit request, structured reports, and CFO memo', async ({ page }) => {
 })
 
 test('audit error is visible and can be retried', async ({ page }) => {
-  await page.route('**/api/agent/audit', route => route.fulfill({ status: 503, json: { detail: 'Gemini service unavailable' } }))
+  await page.route('**/api/agent/audit/stream', route => route.fulfill({ status: 503, json: { detail: 'Gemini service unavailable' } }))
   await page.goto('/')
   await page.getByLabel('Purchase request', { exact: true }).fill('Review a server purchase')
   await page.getByRole('button', { name: 'Run procurement audit' }).click()
@@ -63,4 +63,39 @@ test('mobile layout, navigation, and system status', async ({ page }) => {
   await page.getByRole('button', { name: 'System status', exact: true }).click()
   await expect(page.getByText('gemini-3.8-flash', { exact: true })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
+
+test('shows progress and a draft before the audit completes', async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window)
+    window.fetch = async (input, init) => {
+      if (String(input).endsWith('/api/agent/audit/stream')) {
+        return new Response(new ReadableStream({ start(controller) {
+          const encoder = new TextEncoder()
+          Object.assign(window, { sendAuditEvent: (event: unknown) => controller.enqueue(encoder.encode(JSON.stringify(event) + '\n')), endAudit: () => controller.close() })
+        } }), { headers: { 'Content-Type': 'application/x-ndjson' } })
+      }
+      return original(input, init)
+    }
+  })
+  await page.goto('/')
+  await page.getByLabel('Purchase request', { exact: true }).fill('Review a server purchase')
+  await page.getByRole('button', { name: 'Run procurement audit' }).click()
+  await page.waitForFunction(() => 'sendAuditEvent' in window)
+  await page.evaluate(() => {
+    const stream = window as unknown as { sendAuditEvent: (event: unknown) => void }
+    stream.sendAuditEvent({ type: 'progress', message: 'Writing CFO memorandum…' })
+    stream.sendAuditEvent({ type: 'memo_delta', text: 'Partial CFO draft' })
+  })
+  await expect(page.getByRole('status')).toContainText('Writing CFO memorandum')
+  await expect(page.getByLabel('CFO memorandum in progress')).toContainText('Partial CFO draft')
+  await expect(page.getByRole('button', { name: 'Download memo' })).toHaveCount(0)
+  await page.evaluate(() => {
+    const stream = window as unknown as { sendAuditEvent: (event: unknown) => void; endAudit: () => void }
+    stream.sendAuditEvent({ type: 'error', code: 'prompt_injection_detected', message: 'Please rephrase your procurement question.' })
+    stream.endAudit()
+  })
+  await expect(page.getByRole('alert')).toContainText('Please rephrase')
+  await expect(page.getByLabel('CFO memorandum in progress')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Run procurement audit' })).toBeEnabled()
 })

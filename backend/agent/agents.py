@@ -101,6 +101,48 @@ class ProcurementSupervisor:
             "cfo_memo": cfo_memo,
         }
 
+    def stream_audit(self, request: str):
+        """Yield progress, validated specialist reports, memo deltas and final output.
+
+        Raw tool evidence and intermediate model messages stay on the server.
+        """
+        if not request.strip():
+            raise ValueError("A procurement request is required.")
+        results = {}
+        for key, title, agent in (
+            ("risk_result", "Risk & Compliance", self.risk_agent),
+            ("tax_result", "Tax & Treasury", self.tax_agent),
+            ("control_result", "Financial Control", self.control_agent),
+        ):
+            yield {"type": "progress", "message": f"Reviewing {title}…"}
+            response = None
+            for update in agent.stream(
+                {"messages": [{"role": "user", "content": request}]},
+                stream_mode="updates",
+            ):
+                for node, data in update.items():
+                    if not isinstance(data, dict):
+                        continue
+                    if isinstance(data.get("structured_response"), BaseModel):
+                        response = data["structured_response"]
+                    if node == "tools":
+                        yield {"type": "progress", "message": f"{title}: tool checks completed."}
+            if response is None:
+                raise ValueError("Agent did not return a validated structured response.")
+            results[key] = response.model_dump_json()
+            yield {"type": "specialist", "key": key, "report": results[key]}
+
+        yield {"type": "progress", "message": "Writing CFO memorandum…"}
+        memo = ""
+        for chunk in self.llm.stream(SYNTHESIS_PROMPT_TEMPLATE.format(**results)):
+            text = extract_text(chunk.content)
+            if text:
+                memo += text
+                yield {"type": "memo_delta", "text": text}
+        if not memo.strip():
+            raise ValueError("CFO synthesis returned an empty memorandum.")
+        yield {"type": "complete", "audit": {**results, "cfo_memo": memo}}
+
 
 if __name__ == "__main__":
     sample_request = """

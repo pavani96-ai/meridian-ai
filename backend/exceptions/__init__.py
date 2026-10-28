@@ -9,6 +9,10 @@ class MeridianError(Exception):
     """Base class for every error this app raises on purpose."""
 
 
+class PromptInjectionError(MeridianError):
+    """Known instruction-override content was blocked before a model call."""
+
+
 class ConfigurationError(MeridianError):
     """A required setting is missing or the selected APP_MODE cannot start."""
 

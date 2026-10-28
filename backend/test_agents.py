@@ -161,3 +161,148 @@ def test_cfo_provider_exception_propagates(agents, supervisor):
     supervisor.llm.invoke.side_effect = RuntimeError('Mock synthesis failure')
     with pytest.raises(RuntimeError, match='Mock synthesis failure'):
         supervisor.run_audit('Review invoice')
+
+
+def prepare_stream(supervisor):
+    for name in ('risk_agent', 'tax_agent', 'control_agent'):
+        agent = getattr(supervisor, name)
+        agent.stream.return_value = iter([
+            {'tools': {'messages': ['private tool evidence']}},
+            {'model': agent.invoke.return_value},
+        ])
+    supervisor.llm.stream.return_value = iter([
+        SimpleNamespace(content='CFO '), SimpleNamespace(content='memorandum'),
+    ])
+
+
+def test_stream_emits_progress_reports_deltas_and_validated_completion(agents, supervisor):
+    prepare_stream(supervisor)
+    events = list(supervisor.stream_audit('Review invoice'))
+    reports = [event for event in events if event['type'] == 'specialist']
+    assert [event['key'] for event in reports] == ['risk_result', 'tax_result', 'control_result']
+    assert ''.join(event['text'] for event in events if event['type'] == 'memo_delta') == 'CFO memorandum'
+    assert events[-1] == {'type': 'complete', 'audit': {
+        **{event['key']: event['report'] for event in reports}, 'cfo_memo': 'CFO memorandum',
+    }}
+    assert 'private tool evidence' not in str(events)
+    for name in ('risk_agent', 'tax_agent', 'control_agent'):
+        agent = getattr(supervisor, name)
+        agent.stream.assert_called_once_with(
+            {'messages': [{'role': 'user', 'content': 'Review invoice'}]}, stream_mode='updates')
+        agent.invoke.assert_not_called()
+    supervisor.llm.invoke.assert_not_called()
+
+
+def test_stream_yields_before_starting_model_work(agents, supervisor):
+    prepare_stream(supervisor)
+    events = supervisor.stream_audit('Review invoice')
+    assert next(events)['type'] == 'progress'
+    supervisor.risk_agent.stream.assert_not_called()
+    events.close()
+
+
+def test_stream_missing_structured_output_stops_later_phases(agents, supervisor):
+    prepare_stream(supervisor)
+    supervisor.risk_agent.stream.return_value = iter([{'model': {'messages': []}}])
+    with pytest.raises(ValueError, match='validated structured response'):
+        list(supervisor.stream_audit('Review invoice'))
+    supervisor.tax_agent.stream.assert_not_called()
+    supervisor.llm.stream.assert_not_called()
+
+
+def test_stream_blocked_content_stops_audit(agents, supervisor):
+    from exceptions import PromptInjectionError
+    prepare_stream(supervisor)
+    supervisor.risk_agent.stream.side_effect = PromptInjectionError('private evidence')
+    with pytest.raises(PromptInjectionError):
+        list(supervisor.stream_audit('Review invoice'))
+    supervisor.tax_agent.stream.assert_not_called()
+    supervisor.llm.stream.assert_not_called()
+
+
+def test_stream_empty_memo_never_emits_completion(agents, supervisor):
+    prepare_stream(supervisor)
+    supervisor.llm.stream.return_value = iter([SimpleNamespace(content=' ')])
+    events = []
+    with pytest.raises(ValueError, match='empty memorandum'):
+        for event in supervisor.stream_audit('Review invoice'):
+            events.append(event)
+    assert not any(event['type'] == 'complete' for event in events)
+
+
+def test_installed_langchain_stream_preserves_provider_structured_output(agents, supervisor):
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.messages import AIMessage
+
+    class StructuredFakeModel(FakeMessagesListChatModel):
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+    model = StructuredFakeModel(responses=[AIMessage(content='{"verdict":"APPROVED"}')])
+    graph = create_agent(model=model, response_format=ProviderStrategy(schema=Report))
+    for name in ('risk_agent', 'tax_agent', 'control_agent'):
+        setattr(supervisor, name, graph)
+    supervisor.llm.stream.return_value = iter([SimpleNamespace(content='Memo')])
+    events = list(supervisor.stream_audit('Review invoice'))
+    assert json.loads(events[-1]['audit']['risk_result']) == {'verdict': 'APPROVED'}
+    assert events[-1]['audit']['cfo_memo'] == 'Memo'
+
+
+@pytest.mark.parametrize('request_text', ['', '   '])
+def test_stream_rejects_empty_input_without_calling_specialists(agents, supervisor, request_text):
+    with pytest.raises(ValueError, match='procurement request'):
+        list(supervisor.stream_audit(request_text))
+    for name in ('risk_agent', 'tax_agent', 'control_agent', 'llm'):
+        getattr(supervisor, name).stream.assert_not_called()
+
+
+@pytest.mark.parametrize('phase', ['risk_agent', 'tax_agent', 'control_agent'])
+def test_midstream_specialist_failure_stops_remaining_work(agents, supervisor, phase):
+    prepare_stream(supervisor)
+    def fail(*args, **kwargs):
+        yield {'tools': {'messages': []}}
+        raise RuntimeError('Provider connection lost')
+    getattr(supervisor, phase).stream.side_effect = fail
+    events = []
+    with pytest.raises(RuntimeError, match='Provider connection lost'):
+        for event in supervisor.stream_audit('Review invoice'):
+            events.append(event)
+    assert not any(event['type'] == 'complete' for event in events)
+    order = ['risk_agent', 'tax_agent', 'control_agent', 'llm']
+    for name in order[order.index(phase) + 1:]:
+        getattr(supervisor, name).stream.assert_not_called()
+
+
+def test_cfo_failure_after_partial_text_never_marks_audit_complete(agents, supervisor):
+    prepare_stream(supervisor)
+    def fail(*args, **kwargs):
+        yield SimpleNamespace(content='Partial memorandum')
+        raise RuntimeError('Synthesis interrupted')
+    supervisor.llm.stream.side_effect = fail
+    events = []
+    with pytest.raises(RuntimeError, match='Synthesis interrupted'):
+        for event in supervisor.stream_audit('Review invoice'):
+            events.append(event)
+    assert events[-1] == {'type': 'memo_delta', 'text': 'Partial memorandum'}
+    assert not any(event['type'] == 'complete' for event in events)
+
+
+def test_stream_synthesis_receives_all_three_validated_reports(agents, supervisor):
+    prepare_stream(supervisor)
+    events = list(supervisor.stream_audit('Review invoice'))
+    reports = {event['key']: event['report'] for event in events if event['type'] == 'specialist'}
+    supervisor.llm.stream.assert_called_once_with(agents.SYNTHESIS_PROMPT_TEMPLATE.format(**reports))
+
+
+@pytest.mark.parametrize('field,value', [('credit_score', -1), ('credit_score', 101),
+                                       ('overall_risk_verdict', 'UNVERIFIED'), ('invented_field', 'extra')])
+def test_risk_schema_rejects_invalid_scores_verdicts_and_extra_fields(agents, field, value):
+    from pydantic import ValidationError
+    report = dict(sanctions_check='CLEARED', sanctions_reason='No matches in supplied evidence.',
+                  credit_score=60, credit_risk_level='MODERATE', recommended_payment_terms='Net 30',
+                  supply_chain_risk_flag='NONE', supply_chain_risk_details='No identified risk.',
+                  overall_risk_verdict='APPROVED', risk_notes='Review evidence before purchase.')
+    report[field] = value
+    with pytest.raises(ValidationError):
+        agents.RiskAssessment.model_validate(report)

@@ -15,6 +15,7 @@ Built-in middleware used here (from langchain.agents.middleware):
   * ModelRetryMiddleware     - retries the LLM on transient errors (429 / 503) with backoff
   * ToolRetryMiddleware      - retries flaky tools (e.g. the live FX-rate API)
 Custom middleware written here:
+  * PromptInjectionMiddleware - blocks known overrides in user/tool messages before model calls
   * log_tool_calls           - one structured log line per tool call: name, args, duration, outcome
 """
 
@@ -31,6 +32,34 @@ from langchain.agents.middleware import (
 
 from config.settings import settings
 from logger import GLOBAL_LOGGER as log
+from exceptions import PromptInjectionError
+from prompt_security import contains_prompt_injection
+
+
+class PromptInjectionMiddleware(AgentMiddleware):
+    """Stop known overrides in human/tool messages before each agent model call.
+
+    Trusted system prompts are excluded. Detection is heuristic, not comprehensive.
+    """
+
+    def before_model(self, state, runtime):
+        for message in state.get("messages", []):
+            if getattr(message, "type", None) not in {"human", "tool"}:
+                continue
+            content = message.content
+            texts = [content] if isinstance(content, str) else [
+                block.get("text", "") for block in content if isinstance(block, dict)
+            ]
+            if any(contains_prompt_injection(text) for text in texts if isinstance(text, str)):
+                log.warning("Blocked agent prompt injection", message_type=message.type)
+                raise PromptInjectionError(
+                    "Potential instruction override detected in request or tool evidence. "
+                    "Audit stopped; review the content before retrying."
+                )
+        return None
+
+    async def abefore_model(self, state, runtime):
+        return self.before_model(state, runtime)
 
 
 class ToolCallLoggingMiddleware(AgentMiddleware):
@@ -76,6 +105,7 @@ def build_agent_middleware() -> list[AgentMiddleware]:
     Call limits apply to the agent loop, not LLM calls made inside tools.
     """
     return [
+        PromptInjectionMiddleware(),
         PIIMiddleware("email", strategy="redact", apply_to_input=True, apply_to_tool_results=True),
         PIIMiddleware("credit_card", strategy="redact", apply_to_input=True, apply_to_tool_results=True),
         ModelCallLimitMiddleware(run_limit=settings.agent_max_model_calls, exit_behavior="end"),

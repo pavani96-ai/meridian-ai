@@ -20,3 +20,30 @@ logs/
 backend/logs/
 *.log
 .pytest_cache/
+
+# Local experiments
+/backend/variants_data.py
+/backend/variants_lab.py
+
+# Test coverage and tooling caches
+.coverage
+.coverage.*
+htmlcov/
+coverage/
+.mypy_cache/
+.ruff_cache/
+
+# Frontend dependencies and generated test/build files
+node_modules/
+*.tsbuildinfo
+playwright-report/
+test-results/
+
+# Editor, OS, and temporary files
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.tmp
+*.bak
